@@ -22,7 +22,7 @@ uint8_t lcm_read_count() {
         if (word2==UINT32_MAX) word2=0; //for uninitialized ota_data[1]
         count_addr=(word2>word1)?0x40:0x1040; //select the INactive part
     } 
-    else {UDPLGP("otadata not OK! ABORT\n");}
+    else {UDPLUS("otadata not OK! ABORT\n");}
     
     // read 4 bytes at a time (32 bit words)
     do {bytes+=4; //first word can never fit the end sequence
@@ -30,7 +30,7 @@ uint8_t lcm_read_count() {
     } while ( !(word2==UINT32_MAX || (word2&0xF)==0xE) ); //all bits set or ends in 0b1110
     bytes-=4; //address the word before this as word1
     esp_partition_read(partition, count_addr+bytes, &word1, 4);
-    //UDPLGP("xxxxxxxx %08lx %08lx\n", word1, word2);
+    //UDPLUS("xxxxxxxx %08lx %08lx\n", word1, word2);
     
     if (word2<UINT32_MAX-1) {word1=word2; word2=UINT32_MAX; bytes+=4;} //already started with bits in the last word, shift right
     
@@ -46,8 +46,8 @@ uint8_t lcm_read_count() {
         esp_partition_read(partition, count_addr+bytes-4,  &word0, 4);
         for (jj=0; vv<4; jj++,vv++)            if (word0>>jj&1) val+=(1<<vv); // fill val up to 3 bits, left are lvv bits
     }
-    UDPLGP("%08lx %08lx %08lx ", word0, word1, word2);
-    UDPLGP("val=%ld, ii=%d, jj=%d, vv=%d, lvv=%d, bytes=%ld, count_addr=%0lx\n",val,ii,jj,vv,lvv,bytes,count_addr);
+    UDPLUS("%08lx %08lx %08lx ", word0, word1, word2);
+    UDPLUS("val=%ld, ii=%d, jj=%d, vv=%d, lvv=%d, bytes=%ld, count_addr=%0lx\n",val,ii,jj,vv,lvv,bytes,count_addr);
     count=val/2+1;
     
     return count;
@@ -69,13 +69,13 @@ void lcm_temp_boot() { //restart with RTC value of temp_boot active
         for (jj=ii-1; jj>=0&&vv>=0; jj--,vv--) if (!(new&(1<<vv))) word1&=(~(1<<jj)); //transfer bits to word1
         if (vv>=0) for (jj=31;vv>=0;jj--,vv--) if (!(new&(1<<vv))) word2&=(~(1<<jj)); //if bits lvv,  to word2
         
-        UDPLGP("%08lx %08lx %08lx  new=%ld\n", word0, word1, word2, new);
+        UDPLUS("%08lx %08lx %08lx  new=%ld\n", word0, word1, word2, new);
         //write words to flash
         if (word0==0         )  esp_partition_write(partition,count_addr+bytes-4,&word0,4);
         if (word1!=0x10000000)  esp_partition_write(partition,count_addr+bytes  ,&word1,4); //stupid compare to shut up compiler
         if (word2!=UINT32_MAX)  esp_partition_write(partition,count_addr+bytes+4,&word2,4);
     } 
-    else UDPLGP("otadata not OK! normal reboot\n");    
+    else UDPLUS("otadata not OK! normal reboot\n");    
     
     vTaskDelay(50); //allow e.g. UDPlog to flush output
     esp_restart();
@@ -85,12 +85,21 @@ void lcm_temp_boot() { //restart with RTC value of temp_boot active
 #include <string.h>
 #include "nvs_flash.h"
 #include "esp_mac.h"
+#include "driver/gpio.h"
 
 // the first function is the ONLY thing needed for a repo to support ota after having started with ota-boot
 // in ota-boot the user gets to set the wifi and the repository details and it then installs the ota-main binary
 
 void ota_update(void *arg) {  //arg not used
         //TODO: make a distinct light pattern or other feedback to the user = call identify routine
+        //to get a clean reboot, we disable any GPIO output functions, this does not happen by itself
+        gpio_config_t io_conf = {}; //zero-initialize the config structure.
+        //for C3 use GPIO-0 - GPIO-11 + GPIO-18-GPIO21
+        //for 32 use GPIO-0 - GPIO-5 + GPIO-12-GPIO36 + GPIO-39  etc.
+        io_conf.pin_bit_mask = (1ULL<<GPIO_NUM_32|1ULL<<GPIO_NUM_33); //bit mask of the pins for now
+        io_conf.mode = GPIO_MODE_INPUT;
+        gpio_config(&io_conf); //configure GPIO with the given settings
+        //ready to reboot
         vTaskDelay(500/portTICK_PERIOD_MS); 
         lcm_temp_boot(); //select the OTA main routine
         vTaskDelete(NULL); //should never get here
@@ -128,7 +137,7 @@ unsigned int  ota_read_sysparam(char **manufacturer,char **serial,char **model,c
         sprintf(*serial,"%02X:%02X:%02X:%02X:%02X:%02X",macaddr[0], macaddr[1], macaddr[2], macaddr[3], macaddr[4], macaddr[5]);
     } else {
         *serial="_serial__unknown_";
-        printf("issue with ota_version, expect trouble\n");
+        UDPLUS("issue with ota_version, expect trouble\n");
         return 1; //c_hash==0 is illegal in homekit
     }
 
@@ -141,7 +150,7 @@ unsigned int  ota_read_sysparam(char **manufacturer,char **serial,char **model,c
     if ((dot=strchr(rev,'.'))) {dot[0]=0; c_hash=c_hash*1000+atoi(rev); rev=dot+1;}
                                           c_hash=c_hash*1000+atoi(rev);
                                             //c_hash=c_hash*10  +configuration_variant; //possible future extension
-    printf("manuf=\'%s\' serial=\'%s\' model=\'%s\' revision=\'%s\' c#=%d\n",*manufacturer,*serial,*model,*revision,c_hash);
+    UDPLUS("manuf=\'%s\' serial=\'%s\' model=\'%s\' revision=\'%s\' c#=%d\n",*manufacturer,*serial,*model,*revision,c_hash);
     return c_hash;
 }
 
@@ -149,10 +158,10 @@ unsigned int  ota_read_sysparam(char **manufacturer,char **serial,char **model,c
 #include <homekit/characteristics.h>
 void ota_set(homekit_value_t value) {
     if (value.format != homekit_format_bool) {
-        printf("Invalid ota-value format: %d\n", value.format);
+        UDPLUS("Invalid ota-value format: %d\n", value.format);
         return;
     }
     if (value.bool_value) {
-        xTaskCreate(ota_update,"ota", 2048, NULL, 1, NULL);
+        xTaskCreate(ota_update,"ota", 3072, NULL, 1, NULL);
     }
 }

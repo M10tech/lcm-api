@@ -4,8 +4,8 @@
  */
 #pragma once
 
-#ifndef UDPLGP
-    #define UDPLGP printf
+#ifndef UDPLUS
+    #define UDPLUS printf
 #endif
 uint8_t lcm_read_count(); //read the restart count value from RTC
 void    lcm_temp_boot(); //restart with RTC value of temp_boot active
